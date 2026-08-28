@@ -1,0 +1,90 @@
+# Command Bridge - Service Bus consumer forwarding commands to IoT Hub C2D.
+# Runs as a containerized .NET 8 Isolated worker on AKS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iot-command-bridge
+  labels:
+    app: iot-command-bridge
+    component: bridge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: iot-command-bridge
+  template:
+    metadata:
+      labels:
+        app: iot-command-bridge
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: iot-remote-config
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: bridge
+        image: {{ACR_NAME}}.azurecr.io/iot-command-bridge:{{IMAGE_TAG}}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ServiceBusConnection
+          valueFrom:
+            secretKeyRef:
+              name: iot-remote-config-secrets
+              key: service-bus-connection
+        - name: IoTHubHost
+          value: "{{AZURE_IOTHUB_HOST}}"
+        - name: IoTHubServiceConnection
+          valueFrom:
+            secretKeyRef:
+              name: iot-remote-config-secrets
+              key: iothub-service-connection
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          value: "{{APPINSIGHTS_CONNECTION_STRING}}"
+        ports:
+        - containerPort: 8080
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 20
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iot-command-bridge
+  labels:
+    app: iot-command-bridge
+spec:
+  selector:
+    app: iot-command-bridge
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+  type: ClusterIP

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environment": {
+      "value": "dev"
+    },
+    "sqlServerName": {
+      "value": "sql-iot-dev"
+    },
+    "sqlDatabaseName": {
+      "value": "iot-remote-config-dev"
+    },
+    "keyVaultName": {
+      "value": "kv-iot-dev"
+    },
+    "acrName": {
+      "value": "acriotdev"
+    },
+    "imageTag": {
+      "value": "latest"
+    },
+    "serviceBusNamespace": {
+      "value": "sb-iot-dev"
+    },
+    "redisName": {
+      "value": "redis-rc-dev"
+    }
+  }
+}
