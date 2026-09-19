@@ -1,0 +1,145 @@
+name: CI — Remote Config Service
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  DOTNET_VERSION: "8.0.x"
+  SOLUTION_PATH: "src/RemoteConfig.sln"
+
+jobs:
+  # ═════════════════════════════════════════════════════
+  # 1. Code Format Check
+  # ═════════════════════════════════════════════════════
+  format-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+      - name: Check code format
+        run: dotnet format ${{ env.SOLUTION_PATH }} --verify-no-changes --severity error
+
+  # ═════════════════════════════════════════════════════
+  # 2. Build + Test + Coverage
+  # ═════════════════════════════════════════════════════
+  build-and-test:
+    runs-on: ubuntu-latest
+    needs: format-check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+      - name: Build (Release, no warnings)
+        run: dotnet build ${{ env.SOLUTION_PATH }} -c Release --no-restore -warnaserror
+
+      - name: Run unit tests with coverage
+        run: |
+          dotnet test ${{ env.SOLUTION_PATH }} \
+            -c Release \
+            --no-build \
+            --collect:"XPlat Code Coverage" \
+            --settings src/coverlet.runsettings \
+            --results-directory ./test-results
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: ./test-results/**/coverage.cobertura.xml
+
+  # ═════════════════════════════════════════════════════
+  # 3. SonarCloud Analysis
+  # ═════════════════════════════════════════════════════
+  sonarcloud:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2
+        with:
+          organization: ${{ vars.SONAR_ORG }}
+          projectKey: iot-remote-config
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ═════════════════════════════════════════════════════
+  # 4. Secret Scan (gitleaks)
+  # ═════════════════════════════════════════════════════
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ═════════════════════════════════════════════════════
+  # 5. Placeholder Check
+  # ═════════════════════════════════════════════════════
+  placeholder-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for unresolved placeholders
+        run: |
+          PLACEHOLDER_COUNT=$(grep -r "{{.*}}" infra/ src/*/appsettings.json 2>/dev/null | wc -l)
+          if [ "$PLACEHOLDER_COUNT" -gt 0 ]; then
+            echo "❌ Found $PLACEHOLDER_COUNT unresolved placeholders:"
+            grep -rn "{{.*}}" infra/ src/*/appsettings.json
+            exit 1
+          fi
+          echo "✅ No placeholders found"
+
+  # ═════════════════════════════════════════════════════
+  # 6. Docker Build (main branch only)
+  # ═════════════════════════════════════════════════════
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [build-and-test, gitleaks, placeholder-check]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ACR
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.ACR_NAME }}.azurecr.io
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build & push Docker image
+        run: |
+          IMAGE_TAG="${{ secrets.ACR_NAME }}.azurecr.io/iot-remote-config:${{ github.sha }}"
+          docker build -f src/RemoteConfig.Api/Dockerfile -t $IMAGE_TAG src/
+          docker push $IMAGE_TAG
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV

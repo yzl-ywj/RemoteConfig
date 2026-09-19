@@ -1,0 +1,67 @@
+name: CD — Remote Config Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+env:
+  DOTNET_VERSION: "8.0.x"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Bicep Infrastructure
+        run: |
+          az deployment group create \
+            --resource-group "iot-${{ github.event.inputs.environment }}-rg" \
+            --template-file infra/bicep/main.bicep \
+            --parameters environment=${{ github.event.inputs.environment }} \
+                         sqlServerName="sql-iot-${{ github.event.inputs.environment }}" \
+                         keyVaultName="kv-iot-${{ github.event.inputs.environment }}" \
+                         acrName="${{ secrets.ACR_NAME }}" \
+                         imageTag="${{ github.sha }}"
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group "iot-${{ github.event.inputs.environment }}-rg" \
+            --name "aks-iot-${{ github.event.inputs.environment }}"
+
+      - name: Deploy to AKS
+        run: |
+          export IMAGE_TAG="${{ secrets.ACR_NAME }}.azurecr.io/iot-remote-config:${{ github.sha }}"
+          export ENVIRONMENT="${{ github.event.inputs.environment }}"
+          # Substitute placeholders in K8s manifest
+          envsubst < infra/k8s/deployment.yaml > /tmp/deployment.yaml
+          kubectl apply -f /tmp/deployment.yaml
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/iot-remote-config -n iot-${{ github.event.inputs.environment }}
+          kubectl get pods -n iot-${{ github.event.inputs.environment }} -l app=iot-remote-config
+
+      - name: Health check
+        run: |
+          POD_NAME=$(kubectl get pods -n iot-${{ github.event.inputs.environment }} -l app=iot-remote-config -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -n iot-${{ github.event.inputs.environment }} $POD_NAME -- curl -f http://localhost:8080/health || exit 1
+          echo "✅ Health check passed"
