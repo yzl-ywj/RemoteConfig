@@ -52,7 +52,7 @@ public class RedisCommandStore : ICommandStore
     {
         var json = await _db.StringGetAsync(Key(commandId));
         if (json.IsNullOrEmpty) return null;
-        return JsonSerializer.Deserialize<CommandRequest>(json!, JsonOptions());
+        return JsonSerializer.Deserialize<CommandRequest>(json!.ToString(), JsonOptions());
     }
 
     public async Task<IReadOnlyList<CommandRequest>> GetPendingForDeviceAsync(
